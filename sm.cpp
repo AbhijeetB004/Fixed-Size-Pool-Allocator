@@ -1,216 +1,160 @@
 #include "sm.h"
-#include<map>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-unsigned int m_initialPoolSize;              
-//vector<int> m_PoolSizes;
-map<unsigned int, PoolData_t*> m_PoolMap;    // Mapping of size and pool
+#define MAX_POOLS 32
+#define MAX_BLOCK_SIZE 256
 
-void initStorageManager(const unsigned initialPoolSize, int numPools, const unsigned int *pools)
+unsigned char m_SizeToPoolLookup[MAX_BLOCK_SIZE + 1];
+
+PoolData_t m_Pools[MAX_POOLS];
+int m_NumPools = 0;
+
+int comparePools(const void *a, const void *b) {
+    return (*(unsigned int*)a - *(unsigned int*)b);
+}
+
+void initStorageManager(const unsigned int initialPoolSize, int numPools, const unsigned int *pools)
 {
-    m_initialPoolSize = initialPoolSize;
-    unsigned int totalClaimedMemory = 0;
+    if (numPools > MAX_POOLS) {
+        printf("Error: Too many pools requested. Max is %d\n", MAX_POOLS);
+        abort();
+    }
+
+    unsigned int *sortedPools = (unsigned int *)malloc(numPools * sizeof(unsigned int));
+    memcpy(sortedPools, pools, numPools * sizeof(unsigned int));
+    qsort(sortedPools, numPools, sizeof(unsigned int), comparePools);
+
+    m_NumPools = numPools;
 
     printf("StorageManager:: Initial Pools- ");
     for (int i = 0; i < numPools; i++)
     {
-        PoolData_t *poolData = (PoolData_t *)malloc(sizeof(PoolData_t));
-        if (poolData == nullptr)
-        {
-            printf("\n\n**MEMORY ERROR: initStorageManager: Failed to create pool %u!!\n\n", pools[i]);
+        unsigned int blockSize = sortedPools[i];
+        if (blockSize > MAX_BLOCK_SIZE) {
+            printf("\nError: Pool Size %u exceeds MAX_BLOCK_SIZE (%d)\n", blockSize, MAX_BLOCK_SIZE);
+            abort();
+        }
+        
+        printf("%d ", blockSize);
+
+        size_t poolTotalBytes = (size_t)blockSize * initialPoolSize; 
+        char *poolMem = (char *)malloc(poolTotalBytes);
+        if (!poolMem) {
+            printf("Memory allocation failed for pool %u\n", blockSize);
             abort();
         }
 
-        memset(poolData, 0, sizeof(poolData));
+        m_Pools[i].blockSize = blockSize;
+        m_Pools[i].startAddress = poolMem;
+        m_Pools[i].endAddress = poolMem + poolTotalBytes;
+        m_Pools[i].totalBlocks = poolTotalBytes / blockSize;
+        m_Pools[i].freeCount = m_Pools[i].totalBlocks;
+        m_Pools[i].totalAllocations = 0;
 
-        size_t sizeOfPoolInBytes = pools[i] * sizeof(char) * initialPoolSize;
-        totalClaimedMemory += sizeOfPoolInBytes;
-        char *ptr = (char *)malloc(sizeOfPoolInBytes);
+        char *current = poolMem;
+        char *end = poolMem + poolTotalBytes;
+        
+        unsigned int totalBlocks = m_Pools[i].totalBlocks;
+        for (unsigned int b = 0; b < totalBlocks - 1; ++b) {
+            char *next = current + blockSize;
+            *(void **)current = (void *)next;
+            current = next;
+        }
+        *(void **)current = nullptr;
 
-        initializePoolData(sizeOfPoolInBytes, ptr, pools[i], poolData);
-
-        printf("%d ", pools[i]);
+        m_Pools[i].freeListHead = (void *)poolMem;
     }
 
-    
+    int poolIdx = 0;
+    for (int s = 0; s <= MAX_BLOCK_SIZE; ++s) {
+        while (poolIdx < m_NumPools && m_Pools[poolIdx].blockSize < s) {
+            poolIdx++;
+        }
+        
+        if (poolIdx < m_NumPools) {
+            m_SizeToPoolLookup[s] = (unsigned char)poolIdx;
+        } else {
+            m_SizeToPoolLookup[s] = 255; // Invalid marker
+        }
+    }
+
+    free(sortedPools);
+
     printf("\nStorageManager:: Pool init complete\n");
-    printf("Total claimed memory: %u MB\n\n", totalClaimedMemory/1000/1000);
-
-}
-
-void createNewPool(unsigned sizeId)
-{
-    PoolData_t *poolData = (PoolData_t *)malloc(sizeof(PoolData_t));
-    if (poolData == nullptr)
-    {
-        printf("\n\n**MEMORY ERROR: createNewPool: Failed to create pool %u!!\n\n", sizeId);
-        abort();
-    }
-
-    memset(poolData, 0, sizeof(poolData));
-
-    size_t sizeOfPoolInBytes = sizeId * sizeof(char) * m_initialPoolSize;
-    char *ptr = (char *)malloc(sizeOfPoolInBytes);
-
-    initializePoolData(sizeOfPoolInBytes, ptr, sizeId, poolData);
-    printf("Created new pool : %u\n", sizeId);
-}
-
-void initializePoolData(size_t sizeOfPoolInBytes, char *ptr, unsigned int sizeId, PoolData_t *poolData)
-{
-    poolData->poolSize = sizeId;
-    poolData->startAddress = ptr;
-    poolData->endAddress = ptr + sizeOfPoolInBytes;
-    poolData->totalSize = sizeOfPoolInBytes;
-    poolData->remainingSpace = sizeOfPoolInBytes;
-    poolData->totalBlocks = (poolData->endAddress - poolData->startAddress) / poolData->poolSize;
-    poolData->freeBlocks = poolData->totalBlocks;
-    poolData->usedBlocks = 0;
-    poolData->nextFreeBlock = -1;
-    poolData->nextFreeBlockInSequence = 0;
-    poolData->isFreedBlockBlockAvailable = false;
-    poolData->totalAllocationsFromThisPool = 0;
-
-    m_PoolMap[sizeId] = poolData;
-}
-
-void expandPool(unsigned size)
-{
-    //TODO
-}
-
-void displayPoolInfo()
-{
-    map<unsigned int, PoolData_t*>::iterator it = m_PoolMap.begin();
-    
-    printf("\n\n");
-    while (it != m_PoolMap.end())
-    {
-        PoolData_t *poolData = it->second;
-        unsigned int poolSize = it->first;
-
-        
-        printf("Pool %u\n", poolSize);
-        
-        printf("  totalAllocationsFromThisPool       : %u\n", poolData->totalAllocationsFromThisPool);
-        printf("  startAddress                       : 0x%x\n", poolData->startAddress);
-        printf("  endAddress                         : 0x%x\n", poolData->endAddress);
-        printf("  totalSize                          : %u bytes\n", poolData->totalSize);
-        printf("  remainingSpace                     : %u bytes\n", poolData->remainingSpace);
-        printf("  totalBlocks                        : %u\n", poolData->totalBlocks);
-        printf("  freeBlocks                         : %u\n", poolData->freeBlocks);
-        printf("  usedBlocks                         : %u\n", poolData->usedBlocks);
-        printf("\n");
-
-        it++;
-    }
-    printf("\n** Total Pools: %d **\n", m_PoolMap.size());
 }
 
 void destroyStorageManager()
 {
-    //TODO
+    for (int i = 0; i < m_NumPools; i++) {
+        if (m_Pools[i].startAddress) {
+            free(m_Pools[i].startAddress);
+            m_Pools[i].startAddress = nullptr;
+        }
+    }
 }
 
 void * SM_alloc(size_t size)
 {
-    //printf("SM_alloc called for %d bytes\n", size);
-
-    /* Find which pool to use. If pool of required size not present, create a pool */
-    PoolData_t *poolData = m_PoolMap[size];
-    if (poolData != nullptr)
-    {
-        /* Check if this pool has enough free blocks */
-        if (poolData->freeBlocks == 0)
-        {
-            printf("ERROR: Pool %u exhausted!\n", size);
-            abort();
-            //expandPool(size);
-        }
-    }
-    else
-    {
-        createNewPool(size);
-        poolData = m_PoolMap[size];
-    }
-
-    char *ptr = nullptr;
-
-    if (poolData->isFreedBlockBlockAvailable && poolData->nextFreeBlock >= 0)
-    {
-        /* Allocating a block which was freed earlier. */
-        ptr = findAddressFromBlock(poolData->nextFreeBlock, poolData);
-        poolData->isFreedBlockBlockAvailable = false;
-        poolData->nextFreeBlock = -1;
-        //printf(">> From freed block, poolData->nextFreeBlock = %u\n", poolData->nextFreeBlock);
-    }
-    else
-    {
-        /* Allocating from free blocks in sequnce */
-        ptr = findAddressFromBlock(poolData->nextFreeBlockInSequence, poolData);
-        //printf(">> From sequence\n");
-        poolData->nextFreeBlockInSequence++;
-    }
-
-    //printf("Allocated 0x%x (block %u) in pool %u\n", ptr, poolData->usedBlocks, poolData->poolSize);
-
+    if (size > MAX_BLOCK_SIZE) return nullptr; 
     
-    poolData->freeBlocks--;
-    poolData->usedBlocks++;
-    poolData->remainingSpace -= size;
-    poolData->totalAllocationsFromThisPool++;
+    unsigned char poolIdx = m_SizeToPoolLookup[size];
+    if (poolIdx == 255) return nullptr;
+
+    PoolData_t *pool = &m_Pools[poolIdx];
+
+    void *ptr = pool->freeListHead;
+    if (ptr == nullptr) {
+        printf("ERROR: Pool %u exhausted!\n", pool->blockSize);
+        abort(); 
+    }
+
+    pool->freeListHead = *(void **)ptr;
+    
+    pool->freeCount--;
+    pool->totalAllocations++;
 
     return ptr;
 }
 
 void SM_dealloc(void *ptr)
 {
-    if (ptr == nullptr)
-    {
-        return;
-    }
+    if (ptr == nullptr) return;
 
-    /* Find the pool in which this address lies. */
-    unsigned int poolSize = findPoolFromAddress(ptr);
-    //printf("Deallocating 0x%x from pool %u\n", ptr, poolSize);
-
-    /* Mark this address as free */
-    PoolData_t *poolData = m_PoolMap[poolSize];
-    poolData->freeBlocks++;
-    poolData->usedBlocks--;
-    poolData->nextFreeBlock = findBlockFromAddress((char *)ptr, poolData);
-    //printf("Setting nextFreeBlock=%u in pool %u\n", poolData->nextFreeBlock, poolData->poolSize);
-    poolData->isFreedBlockBlockAvailable = true;
-    poolData->remainingSpace += poolSize;
-
-    //printf("Deallocated 0x%x block (%u) from pool %u\n", ptr, poolData->nextFreeBlock, poolSize);
-}
-
-unsigned int findPoolFromAddress(void *ptr)
-{
-    map<unsigned int, PoolData_t*>::iterator it = m_PoolMap.begin();
-    while (it != m_PoolMap.end())
-    {
-        PoolData_t *poolData = it->second;
-        //printf(" Checking 0x%x in pool %u [0x%x, 0x%x] \n", ptr, poolData->poolSize, poolData->startAddress, poolData->endAddress);
-        if (ptr >= poolData->startAddress && ptr <= poolData->endAddress)
-        {
-            return poolData->poolSize;
+    PoolData_t *pool = nullptr;
+    for (int i = 0; i < m_NumPools; ++i) {
+        if (ptr >= m_Pools[i].startAddress && ptr < m_Pools[i].endAddress) {
+            pool = &m_Pools[i];
+            break;
         }
-        it++;
     }
 
-    /* If we reached here, it means something is wrong! */
-    printf("\n\n**ERROR: 0x%x not present in any of the memory pools!!\n\n", ptr);
-    abort();
+    if (pool) {
+        // O(1) Push to Free List
+        *(void **)ptr = pool->freeListHead;
+        pool->freeListHead = ptr;
+        
+        pool->freeCount++;
+    } else {
+        // Pointer does not belong to any pool?
+        // This is a bug in caller or heap pointer passed to SM_dealloc
+        printf("ERROR: SM_dealloc called on unknown pointer %p\n", ptr);
+        abort();
+    }
 }
 
-char *findAddressFromBlock(unsigned int block, PoolData_t *poolData)
+void displayPoolInfo()
 {
-    return poolData->startAddress + (block * poolData->poolSize);
-}
-
-unsigned int findBlockFromAddress(char *addr, PoolData_t *poolData)
-{
-    return (addr - poolData->startAddress) / poolData->poolSize;    
+    printf("\n\n");
+    for (int i = 0; i < m_NumPools; ++i)
+    {
+        PoolData_t *pool = &m_Pools[i];
+        printf("Pool %u\n", pool->blockSize);
+        printf("  totalAllocationsFromThisPool       : %u\n", pool->totalAllocations);
+        printf("  totalBlocks                        : %u\n", pool->totalBlocks);
+        printf("  freeBlocks                         : %u\n", pool->freeCount);
+        printf("\n");
+    }
+    printf("\n** Total Pools: %d **\n", m_NumPools);
 }

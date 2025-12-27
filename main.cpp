@@ -1,11 +1,14 @@
 #include<iostream>
 #include<Windows.h>
 
+#include <vector>
 #include "sm.h"
 
+using namespace std;
 
 
-#define DO_POOL_ALLOCATION false
+
+#define DO_POOL_ALLOCATION true
 
 #define DO_DEALLOCATIONS_ALWAYS false   // Priority 1 - If this is true, value of DO_DEALLOCATIONS is ignored
 #define DO_DEALLOCATIONS true           // Priority 2
